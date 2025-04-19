@@ -515,6 +515,7 @@ function targets.setupSplits()
 				yVelocity = memory.player[port].entity.self_induced_velocity_y,
 				actionState = memory.player[port].entity.action_state,
 				targetsLeft = memory.stage.targets,
+				isFastfalling = memory.player[port].entity.is_fastfalling,
 			}
 			if not targets.TIMER_SPLIT_FRAMES_ACTIVE[index] and split.condition(game_state) then
 				local time = targets.getTimerFrame()

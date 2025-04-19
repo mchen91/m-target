@@ -1,3 +1,5 @@
+local log = require("log")
+
 local ACTION_STATES = {
     JUMP_SQUAT = 0x18,
     DOUBLE_JUMP = 0x1B,
@@ -63,17 +65,10 @@ return {
         end,
     },
     {
-        attribute = "player.1.entity.self_induced_velocity_y",
+        attribute = "player.1.entity.is_fastfalling",
         description = "Fastfall",
         condition = function (state)
-            return math.abs(state.yVelocity - -2.3) < 0.1 and math.abs(state.xPos - -75) < 13 and math.abs(state.yPos - 34) < 15
-        end,
-    },
-    {
-        attribute = "stage.targets",
-        description = "T9",
-        condition = function (state)
-            return state.targetsLeft == 1
+            return state.isFastfalling ~= 0 and math.abs(state.xPos - -75) < 13 and math.abs(state.yPos - 34) < 15
         end,
     },
     {
