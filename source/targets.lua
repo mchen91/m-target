@@ -19,6 +19,7 @@ local log = require("log")
 local memory = require("memory")
 local melee = require("melee")
 local lsqlite3 = require("lsqlite3")
+local splits = require("splits")
 
 local graphics = love.graphics
 
@@ -92,12 +93,12 @@ timedb:exec([[CREATE TABLE IF NOT EXISTS runs (
 );]])
 
 timedb:exec([[CREATE TABLE IF NOT EXISTS splits (
-	run			INTEGER NOT NULL, -- the RUN_ID that this split is tied to
-	target		INTEGER, -- target number this split was for
-	tframe		INTEGER, -- #frames the timer spent to achieve this split
-	gframe		INTEGER,  -- #frames in total spent to achieve this split (including before timer start)
-	time		INTEGER, -- #frames spent between last split and this split
-	UNIQUE(run,target) -- we should never have duplicate targets in a given run
+	run			INTEGER NOT NULL,   -- the RUN_ID that this split is tied to
+	split_index	INTEGER NOT NULL,   -- the index of the split
+	tframe		INTEGER,            -- #frames the timer spent to achieve this split
+	gframe		INTEGER,            -- #frames in total spent to achieve this split (including before timer start)
+	time		INTEGER,            -- #frames spent between last split and this split
+	UNIQUE(run,split_index)         -- we should never have duplicate splits in a given run
 );]])
 
 function targets.getFrame()
@@ -230,14 +231,14 @@ function targets.getRunData(runid)
 	if not runid then return data end
 
 	local stmt = timedb:prepare([[
-SELECT run, target, tframe
+SELECT run, split_index, tframe
 FROM splits
 WHERE run = ?
-ORDER BY target;]])
+ORDER BY split_index;]])
 	stmt:bind_values(runid)
 
 	for row in stmt:nrows() do
-		data.splits[row.target] = row.tframe
+		data.splits[row.split_index] = row.tframe
 		data.broken = row.target
 		data.tframe = row.tframe
 	end
@@ -340,8 +341,8 @@ SELECT min(splits.time) as time
 FROM runs
 INNER JOIN splits on splits.run = runs.run
 WHERE runs.character=? AND runs.result=6
-GROUP BY splits.target
-ORDER BY splits.target]])
+GROUP BY splits.split_index
+ORDER BY splits.split_index]])
 	stmt:bind_values(character)
 
 	targets.TIMER_SPLIT_FRAMES_DISPLAY = {}
@@ -364,8 +365,8 @@ SELECT SUM(time) FROM (
 	FROM runs
 	INNER JOIN splits on splits.run = runs.run
 	WHERE runs.character=? AND runs.result=6
-	GROUP BY splits.target
-	ORDER BY splits.target
+	GROUP BY splits.split_index
+	ORDER BY splits.split_index
 )]])
 	stmt:bind_values(character)
 
@@ -420,15 +421,15 @@ function targets.createRun()
 	return targets.RUN_ID_ACTIVE
 end
 
-function targets.saveSplit(target, frames)
+function targets.saveSplit(split_index, frames)
 	targets.newRun()
-	targets.TIMER_SPLIT_FRAMES_ACTIVE[target] = frames
-	local timespent = (targets.TIMER_SPLIT_FRAMES_ACTIVE[target] or 0) - (targets.TIMER_SPLIT_FRAMES_ACTIVE[target-1] or 0)
-	local stmt = timedb:prepare("INSERT INTO splits (run, target, tframe, gframe, time) VALUES (?,?,?,?,?);")
-	stmt:bind_values(targets.RUN_ID_ACTIVE, target, targets.getTimerFrame(), memory.frame, timespent)
+	targets.TIMER_SPLIT_FRAMES_ACTIVE[split_index] = frames
+	local timespent = (targets.TIMER_SPLIT_FRAMES_ACTIVE[split_index] or 0) - (targets.TIMER_SPLIT_FRAMES_ACTIVE[split_index-1] or 0)
+	local stmt = timedb:prepare("INSERT INTO splits (run, split_index, tframe, gframe, time) VALUES (?,?,?,?,?);")
+	stmt:bind_values(targets.RUN_ID_ACTIVE, split_index, targets.getTimerFrame(), memory.frame, timespent)
 	stmt:step()
 	stmt:finalize()
-	if target >= 10 then
+	if split_index >= table.getn(splits) then
 		-- We force the RESULT_COMPLETE here instead of a match.result hook.
 		-- match.result gets called a frame after we hit the target, messing up our run time
 		targets.endRun(RESULT_COMPLETE)
@@ -503,49 +504,26 @@ memory.hook("match.result", "Targets - Check start of game", function(result)
 	end
 end)
 
-memory.hook("stage.targets", "Targets - Save Split", function(remain, prev_remain)
-	if targets.IGNORE_TARGET_RESET then
-		targets.IGNORE_TARGET_RESET = false
-
-		--[[
-			When exiting back to the CSS screen, the remaining targets value doesn't reset yet. So if we had
-			7 targets remaining, it would still think there are 7 targets left initialiy.
-			When you select a character, it will start off by setting the remaining target count to 0.
-			This tricks our split recorder into thinking we broke the remaining 3 targets.
-
-			-----------
-			targets-remain = 7;
-			[LRA+S pressed, exiting to menu];
-			targets-remain = 7;
-			[Character selected + loading stage]
-			targets-remain = 0;
-			[Stage finished loading]
-			targets-remain = 10;
-			-----------
-
-			This section of code checks to see if we are resetting the remain count back to 0 AND IGNORES IT.
-		]]
-		
-		if remain == 0 then return end
+function targets.setupSplits()
+	local port = targets.getActivePort()
+	for index, split in pairs(splits) do
+		memory.hook(split.attribute, split.description, function (value)
+			local game_state = {
+				xPos = memory.player[port].position_x,
+				yPos = memory.player[port].position_y,
+				xVelocity = memory.player[port].entity.self_induced_velocity_x,
+				yVelocity = memory.player[port].entity.self_induced_velocity_y,
+				actionState = memory.player[port].entity.action_state,
+				targetsLeft = memory.stage.targets,
+			}
+			if not targets.TIMER_SPLIT_FRAMES_ACTIVE[index] and split.condition(game_state) then
+				local time = targets.getTimerFrame()
+				log.debug("Split %d: %s", index, time)
+                targets.saveSplit(index, time)
+			end
+		end)
 	end
-
-	if not targets.isValidRun() then return end
-
-	local decresed = prev_remain > remain
-
-	local endpos = 10-remain
-	local startpos = (10-prev_remain)+1
-
-	if decresed then
-		-- Only log splits when the target count decreases
-		for i=startpos, endpos do
-			-- We can hit more than one target in a single frame, so loop through and mark every single one as hit
-			log.info("Hit target #%d at frame %d - time %02.02f", i, targets.getTimerFrame(), getMeleeTimestamp(targets.getTimerFrame()))
-			targets.saveSplit(i, targets.getTimerFrame())
-		end
-		targets.BROKEN = endpos
-	end
-end)
+end
 
 local MENU_BUTTONS = {
 	[0x1] = MODE_PREV,	-- LEFT
@@ -597,6 +575,10 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords)
 }
 ]]
 
+function targets.resizeWindow()
+	love.window.setMode(320, 88 + 36 * table.getn(splits))
+end
+
 function targets.drawSplits()
 	local port = targets.getActivePort()
 	local character = targets.getCharacter()
@@ -637,9 +619,9 @@ function targets.drawSplits()
 	graphics.setColor(255, 255, 255, 255)
 	graphics.print(secstr, 160 - secw/2, 4)
 
-	local current = targets.BROKEN + 1
+	local current = table.getn(targets.TIMER_SPLIT_FRAMES_ACTIVE) + 1
 
-	for i=1,10 do
+	for i=1,table.getn(splits) do
 		if activeRun and current == i then
 			graphics.setColor(0, 100, 0, 150)
 		elseif i%2 == 1 then
@@ -654,9 +636,9 @@ function targets.drawSplits()
 
 		graphics.setFont(SPLIT_SEC)
 		graphics.setColor(0, 0, 0, 255)
-		graphics.print(numstr, 8, y)
+		graphics.print(splits[i].description, 8, y)
 		graphics.setColor(255, 255, 255, 255)
-		graphics.print(numstr, 8, y-1)
+		graphics.print(splits[i].description, 8, y-1)
 
 		if current == i then
 			greyscale:send("percent", 0.25)
@@ -665,11 +647,6 @@ function targets.drawSplits()
 		else
 			greyscale:send("percent", 1)
 		end
-
-		graphics.setShader(greyscale)
-			graphics.setColor(255, 255, 255, 255)
-			graphics.easyDraw(TARGET, 8 + 24, 8 + (36*i), 0, 24, 24)
-		graphics.setShader()
 
 		local t
 		if activeRun and current == i then
@@ -732,39 +709,41 @@ function targets.drawSplits()
 	local seconds = getMeleeTimestamp(besttime)
 	local secstr = string.format("Personal Best: %.02f", seconds)
 
+	local windowHeight = love.graphics.getHeight()
+
 	graphics.setFont(SPLIT_SEC)
 	graphics.setColor(0, 0, 0, 255)
-	graphics.print(secstr, 4, 448 - 24)
+	graphics.print(secstr, 4, windowHeight - 24)
 	graphics.setColor(255, 255, 255, 255)
-	graphics.print(secstr, 4, 448 - 23)
+	graphics.print(secstr, 4, windowHeight - 23)
 
 	local resStr = string.format("Result: %s", targets.getResultText(targets.RUN_RESULT))
 
 	graphics.setFont(SPLIT_SEC)
 	graphics.setColor(0, 0, 0, 255)
-	graphics.print(resStr, 4, 448 - 46)
+	graphics.print(resStr, 4, windowHeight - 46)
 	graphics.setColor(255, 255, 255, 255)
-	graphics.print(resStr, 4, 448 - 45)
+	graphics.print(resStr, 4, windowHeight - 45)
 
 	if targets.IN_DISPLAY_MENU ~= nil then
 		graphics.setColor(0, 0, 0, 200)
-		graphics.rectangle("fill", 0, 0, 320, 448)
+		graphics.rectangle("fill", 0, 0, 320, windowHeight)
 
 		graphics.setColor(255, 255, 255, 255)
 
 		local controller = memory.controller[port].buttons
-		graphics.easyDraw(MENU_TEXT, 320/2, 448/2, 0, 320, 448, 0.5, 0.5)
+		graphics.easyDraw(MENU_TEXT, 320/2, windowHeight/2, 0, 320, windowHeight, 0.5, 0.5)
 
 		if bit.band(controller.pressed, 0x40) == 0x40 then
-			graphics.easyDraw(L_PRESSED, 0, 0, 0, 160, 112)
+			graphics.easyDraw(L_PRESSED, 0, 0, 0, 160, windowHeight / 4)
 		end
 		if bit.band(controller.pressed, 0x20) == 0x20 then
-			graphics.easyDraw(R_PRESSED, 160, 0, 0, 160, 112)
+			graphics.easyDraw(R_PRESSED, 160, 0, 0, 160, windowHeight / 4)
 		end
 
 		for mask, tex in pairs(DPAD_TEXTURES) do
 			if bit.band(controller.pressed, mask) == mask then
-				graphics.easyDraw(tex, 320/2, 448/2, 0, 128, 128, 0.5, 0.5)
+				graphics.easyDraw(tex, 320/2, windowHeight/2, 0, 128, 128, 0.5, 0.5)
 			end
 		end
 	end

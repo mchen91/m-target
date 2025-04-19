@@ -64,6 +64,8 @@ function love.load(args, unfilteredArg)
 		love.updateTitle("M'Target - Invalid permissions...")
 		--notification.error()
 	end
+
+	targets.resizeWindow()
 end
 
 function love.update(dt)
@@ -284,6 +286,10 @@ function love.draw()
 	if memory.initialized and memory.game and memory.controller then
 		if targets.isBTTMode() then
 			targets.drawSplits()
+			if not targets.isSplitsSetup then
+				targets.setupSplits()
+				targets.isSplitsSetup = true
+			end
 		else
 			love.drawTrobber(TARGET)
 			love.drawNotificationText("Waiting for Target Test")

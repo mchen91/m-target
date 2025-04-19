@@ -68,6 +68,8 @@ local player_static_struct = {
 	[0x004] = { type = "u32", name = "character" },
 	[0x008] = { type = "u32", name = "mode" },
 	[0x00C] = { type = "u16", name = "transformed" },
+	[0x010] = { type = "float", name = "position_x", debug = false },
+	[0x014] = { type = "float", name = "position_y", debug = false },
 	[0x044] = { type = "u8", name = "skin" },
 	--[0x045] = { type = "u8", name = "port" },
 	[0x046] = { type = "u8", name = "color" },
@@ -93,6 +95,9 @@ for id, address in ipairs(player_static_addresses) do
 			struct = {
 				[0x60 + 0x0004] = { type = "u32", name = "character" },
 				--[0x60 + 0x000C] = { type = "u8", name = "port" },
+				[0x60 + 0x0010] = { type = "u32", name = "action_state", debug = false },
+				[0x60 + 0x0080] = { type = "float", name = "self_induced_velocity_x", debug = false },
+				[0x60 + 0x0084] = { type = "float", name = "self_induced_velocity_y", debug = false },
 				--[0x60 + 0x0618] = { type = "u8", name = "index" },
 				[0x60 + 0x0619] = { type = "u8", name = "skin" },
 				[0x60 + 0x061A] = { type = "u8", name = "color" },
